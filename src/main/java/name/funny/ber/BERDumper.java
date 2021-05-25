@@ -133,17 +133,16 @@ public class BERDumper {
         }
     }
 
-    private void dump(BERValue berValue, IndentSequence indent) throws IOException {
+    private void dump(BERDecoders.StructureAndContent structureAndContent, IndentSequence indent) throws IOException {
+        BERValue berValue = structureAndContent.getStructure();
+        byte[] content = structureAndContent.getContent();
         out.append(indent);
         if (showExtents) {
-            ByteBuffer elementBuffer = berValue.getElementBuffer();
-            if (elementBuffer.hasArray()) {
-                out.append('<');
-                out.append(String.valueOf(elementBuffer.arrayOffset()));
-                out.append(' ');
-                out.append(String.valueOf(elementBuffer.limit()));
-                out.append("> ");
-            }
+            out.append('<');
+            out.append(String.valueOf(berValue.getElementStart()));
+            out.append(' ');
+            out.append(String.valueOf(berValue.getElementLength()));
+            out.append("> ");
         }
         String knownName = knownTagName(berValue);
         if (knownName != null) {
@@ -170,40 +169,42 @@ public class BERDumper {
             out.append(" {\n");
             IndentSequence subIndent = indent.extend(4);
             for (BERValue child : berValue) {
-                dump(child, subIndent);
+                dump(new BERDecoders.StructureAndContent(child, content), subIndent);
                 out.append('\n');
             }
             out.append(indent);
             out.append("}");
             return;
         }
-        ByteBuffer contentBuffer = berValue.getContentBuffer();
-        try {
-            if (berValue.getTagClass() == BERTagClass.Universal &&
-                    dumpUniversallyTaggedElement(berValue.getTag(), contentBuffer)) {
-                return;
-            }
-            BERValue innerBER = tryExtractBerValue(contentBuffer);
-            if (innerBER != null) {
-                out.append(" ber-encoded ");
-                hexdump(out, contentBuffer);
-                out.append(":\n");
-                dump(innerBER, indent.extend(2));
+        if (content == null) {
+            out.append(" <length: ");
+            out.append(String.valueOf(berValue.getContentLength()));
+            out.append(">");
+            return;
+        }
+        ByteBuffer contentBuffer = structureAndContent.byteBuffer();
+        if (berValue.getTagClass() == BERTagClass.Universal &&
+                dumpUniversallyTaggedElement(berValue.getTag(), contentBuffer)) {
+            return;
+        }
+        BERValue innerBER = tryExtractBerValue(structureAndContent);
+        if (innerBER != null) {
+            out.append(" ber-encoded ");
+            hexdump(out, contentBuffer);
+            out.append(":\n");
+            dump(new BERDecoders.StructureAndContent(innerBER, content), indent.extend(2));
+        } else {
+            String stringValue;
+            if ((stringValue = tryDecodeASCII(contentBuffer)) != null) {
+                out.append(" ia5-string ");
+                out.append(stringValue);
+            } else if ((stringValue = tryDecodeUTF8(contentBuffer)) != null) {
+                out.append(" utf8-string ");
+                out.append(stringValue);
             } else {
-                String stringValue;
-                if ((stringValue = tryDecodeASCII(contentBuffer)) != null) {
-                    out.append(" ia5-string ");
-                    out.append(stringValue);
-                } else if ((stringValue = tryDecodeUTF8(contentBuffer)) != null) {
-                    out.append(" utf8-string ");
-                    out.append(stringValue);
-                } else {
-                    out.append(' ');
-                    hexdump(out, contentBuffer);
-                }
+                out.append(' ');
+                hexdump(out, contentBuffer);
             }
-        } finally {
-            contentBuffer.rewind();
         }
     }
 
@@ -215,18 +216,19 @@ public class BERDumper {
         }
     }
 
-    private static BERValue tryExtractBerValue(ByteBuffer valueBuffer) {
+    private static BERValue tryExtractBerValue(BERDecoders.StructureAndContent structureAndContent) {
+        BERValue berValue = structureAndContent.getStructure();
+        byte[] content = structureAndContent.getContent();
         // let's see if it's a BER-encoded element contained inside a sequence of bytes
         try {
-            return BERDecoder.decode(valueBuffer);
+            return BERDecoders.fromByteArray(content, berValue.getContentStart(), berValue.getContentLength());
         } catch (BERDecodingException e) {
             try {
                 // sometimes BER-encoded values are put into bit-strings -
                 // consider only bit-strings which contain whole number of bytes,
                 // i.e. with the first byte 0
-                if (valueBuffer.limit() > 1 && valueBuffer.get(0) == 0) {
-                    valueBuffer.position(1);
-                    return BERDecoder.decode(valueBuffer);
+                if (berValue.getContentLength() > 1 && content[berValue.getContentStart()] == 0) {
+                    return BERDecoders.fromByteArray(content, berValue.getContentStart() + 1, berValue.getContentLength() - 1);
                 }
             } catch (BERDecodingException deeperE) {
                 // we tried our best
@@ -308,25 +310,26 @@ public class BERDumper {
         return null;
     }
 
-    public void dump(BERValue berValue) throws IOException {
-        dump(berValue, new IndentSequence(0, ' '));
+    public void dump(BERDecoders.StructureAndContent structureAndContent) throws IOException {
+        dump(structureAndContent, new IndentSequence(0, ' '));
     }
 
-    public static String toString(BERValue berValue) {
+    public static String toString(BERDecoders.StructureAndContent structureAndContent) {
         StringBuilder out = new StringBuilder();
         try {
-            new BERDumper(out).dump(berValue);
+            new BERDumper(out).dump(structureAndContent);
         } catch (IOException e) {
             throw new AssertionError(e);
         }
         return out.toString();
     }
 
+    @SuppressWarnings("java:S106")
     public static void main(String[] args) throws IOException, BERDecodingException {
-        byte[] bytes = args.length == 0 || "-".equals(args[0])
-                ? System.in.readAllBytes()
-                : Files.readAllBytes(Paths.get(args[0]));
-        new BERDumper(System.out, args.length > 1).dump(BERDecoder.decode(bytes));
+        InputStream in = args.length == 0 || "-".equals(args[0]) ? System.in : Files.newInputStream(Paths.get(args[0]));
+        BERDecoders.StructureAndContent structureAndContent = BERDecoders.fromInputStream(in);
+        new BERDumper(System.out, args.length > 1)
+                .dump(structureAndContent);
         System.out.println();
     }
 

@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 
 public class BEREncoder {
+/*
     private static final Comparator<byte[]> unsignedByteArrayComparator = (byte[] a, byte[] b) -> {
         if (a == b) {
             return 0;
@@ -132,4 +133,5 @@ public class BEREncoder {
         }
         return count;
     }
+*/
 }
