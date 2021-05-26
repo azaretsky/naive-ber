@@ -327,7 +327,7 @@ public class BERDumper {
     @SuppressWarnings("java:S106")
     public static void main(String[] args) throws IOException, BERDecodingException {
         InputStream in = args.length == 0 || "-".equals(args[0]) ? System.in : Files.newInputStream(Paths.get(args[0]));
-        BERDecoders.StructureAndContent structureAndContent = BERDecoders.fromInputStream(in);
+        BERDecoders.StructureAndContent structureAndContent = BERDecoders.fromInputStream(in, new byte[4096]);
         new BERDumper(System.out, args.length > 1)
                 .dump(structureAndContent);
         System.out.println();

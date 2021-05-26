@@ -1,6 +1,5 @@
 package name.funny.ber;
 
-import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -32,7 +31,7 @@ public class BERDecoders {
         }
     }
 
-    public static StructureAndContent fromInputStream(InputStream in) throws BERDecodingException {
+    public static StructureAndContent fromInputStream(InputStream in, byte[] bytes) throws BERDecodingException {
         var ref = new Object() {
             BERValue result;
         };
@@ -40,7 +39,7 @@ public class BERDecoders {
             ref.result = berValue;
             return Decoder.done;
         }));
-        byte[] bytes = fromInputStream0(decoder, new byte[4096], new BufferedInputStream(in));
+        bytes = fromInputStream0(decoder, bytes, in);
         return new StructureAndContent(ref.result, bytes);
     }
 
@@ -71,10 +70,12 @@ public class BERDecoders {
         if (b == -1) {
             throw new BERDecodingException("EOF " + decoder);
         }
-        if (decoder.getPosition() >= bytes.length) {
-            bytes = Arrays.copyOf(bytes, bytes.length * 2);
+        if (bytes != null) {
+            if (decoder.getPosition() >= bytes.length) {
+                bytes = Arrays.copyOf(bytes, bytes.length * 2);
+            }
+            bytes[decoder.getPosition()] = (byte) b;
         }
-        bytes[decoder.getPosition()] = (byte) b;
         decoder.processByte((byte) b);
         return bytes;
     }
@@ -82,18 +83,30 @@ public class BERDecoders {
     private static byte[] readBytes(Decoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
         int skipLength = decoder.getSkipLength();
         if (skipLength != 0) {
-            int newPosition = decoder.getPosition() + skipLength;
-            if (newPosition > bytes.length) {
-                bytes = Arrays.copyOf(bytes, Math.max(bytes.length * 2, newPosition));
-            }
-            int read;
-            try {
-                read = in.readNBytes(bytes, decoder.getPosition(), skipLength);
-            } catch (IOException e) {
-                throw new BERDecodingException(decoder.toString(), e);
-            }
-            if (read != skipLength) {
-                throw new BERDecodingException("skip=" + skipLength + " read=" + read + " " + decoder);
+            if (bytes != null) {
+                int newPosition = decoder.getPosition() + skipLength;
+                if (newPosition > bytes.length) {
+                    bytes = Arrays.copyOf(bytes, Math.max(bytes.length * 2, newPosition));
+                }
+                int read;
+                try {
+                    read = in.readNBytes(bytes, decoder.getPosition(), skipLength);
+                } catch (IOException e) {
+                    throw new BERDecodingException(decoder.toString(), e);
+                }
+                if (read != skipLength) {
+                    throw new BERDecodingException("skip=" + skipLength + " read=" + read + " " + decoder);
+                }
+            } else {
+                long skipped;
+                try {
+                    skipped = in.skip(skipLength);
+                } catch (IOException e) {
+                    throw new BERDecodingException(decoder.toString(), e);
+                }
+                if (skipped != skipLength) {
+                    throw new BERDecodingException("skip=" + skipLength + " skipped=" + skipped + " " + decoder);
+                }
             }
         }
         decoder.skip();
