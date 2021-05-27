@@ -35,15 +35,15 @@ public class BERDecoders {
         var ref = new Object() {
             BERValue result;
         };
-        Decoder decoder = new Decoder(BERDecoder.decodeOne(berValue -> {
+        BERDecoder decoder = new BERDecoder(BERDecoder.decodeOne(berValue -> {
             ref.result = berValue;
-            return Decoder.done;
+            return BERDecoder.done;
         }));
         bytes = fromInputStream0(decoder, bytes, in);
         return new StructureAndContent(ref.result, bytes);
     }
 
-    private static byte[] fromInputStream0(Decoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
+    private static byte[] fromInputStream0(BERDecoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
         for (; ; ) {
             switch (decoder.getState()) {
             case FAILED:
@@ -60,7 +60,7 @@ public class BERDecoders {
         }
     }
 
-    private static byte[] readByte(Decoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
+    private static byte[] readByte(BERDecoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
         int b;
         try {
             b = in.read();
@@ -80,7 +80,7 @@ public class BERDecoders {
         return bytes;
     }
 
-    private static byte[] readBytes(Decoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
+    private static byte[] readBytes(BERDecoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
         int skipLength = decoder.getSkipLength();
         if (skipLength != 0) {
             if (bytes != null) {
@@ -117,10 +117,10 @@ public class BERDecoders {
         var ref = new Object() {
             BERValue result;
         };
-        Decoder decoder = new Decoder(
+        BERDecoder decoder = new BERDecoder(
                 BERDecoder.decodeOne(berValue -> {
                     ref.result = berValue;
-                    return Decoder.done;
+                    return BERDecoder.done;
                 }),
                 offset, offset + length);
         for (; ; ) {
