@@ -1,19 +1,23 @@
 package name.funny.ber;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.function.Function;
-import java.util.function.IntFunction;
+import name.funny.ber.DecoderEvent.DefiniteConstructedStart;
+import name.funny.ber.DecoderEvent.IndefiniteConstructedEnd;
+import name.funny.ber.DecoderEvent.IndefiniteConstructedStart;
+import name.funny.ber.DecoderEvent.Primitive;
+
+import static name.funny.ber.DecoderEvent.definiteConstructedEnd;
 
 public final class BERDecoder {
     public enum State {
         DONE,
         FAILED,
         NEED_BYTE,
-        SKIP
+        SKIP,
+        EVENT
     }
 
     public enum Error {
+        BAD_TAG,
         BAD_EOC,
         PRIMITIVE_INDEFINITE,
         LARGE_TAG_LENGTH,
@@ -21,38 +25,88 @@ public final class BERDecoder {
         OUT_OF_BOUNDS
     }
 
+    public static BERDecoder singleElementDecoder() {
+        return new BERDecoder(decodeOne, 0, -1);
+    }
+
+    public static BERDecoder singleElementDecoder(int position, int limit) {
+        return new BERDecoder(decodeOne, position, limit);
+    }
+
     public State getState() {
         return state;
     }
 
     public Error getError() {
-        assert state == State.FAILED;
+        requireState(State.FAILED);
         return error;
     }
 
     public int getSkipLength() {
-        assert state == State.SKIP;
+        requireState(State.SKIP);
         return skipLength;
     }
 
-    public void processByte(byte b) {
-        assert state == State.NEED_BYTE;
-        ByteProcessor next = byteProcessor;
-        byteProcessor = null;
-        ++position;
-        next.apply(b).mutate(this);
+    public DecoderEvent getEvent() {
+        requireState(State.EVENT);
+        return event;
     }
 
-    public void skip() {
-        assert state == State.SKIP;
-        Mutator next = skipContinuation;
-        skipContinuation = null;
-        position += skipLength;
-        next.mutate(this);
+    public void processByte(byte b) {
+        requireState(State.NEED_BYTE);
+        ++position;
+        ByteProcessor bp = byteProcessor;
+        byteProcessor = null;
+        bp.apply(b).mutate(this);
+    }
+
+    public void recurse() {
+        if (!(state == State.EVENT && event instanceof DefiniteConstructedStart)) {
+            throw new IllegalStateException("cannot recurse in state " + state + " after event " + event);
+        }
+        event = null;
+        dcsAdvance(true);
+    }
+
+    public void next() {
+        switch (state) {
+        case SKIP: {
+            position += skipLength;
+            simpleSdvance();
+            break;
+        }
+        case EVENT:
+            boolean isDCS = event instanceof DefiniteConstructedStart;
+            event = null;
+            if (isDCS) {
+                dcsAdvance(false);
+            } else {
+                simpleSdvance();
+            }
+            break;
+        default:
+            throw new IllegalStateException("cannot continue in " + state + " state");
+        }
+    }
+
+    private void dcsAdvance(boolean recurse) {
+        BooleanProcessor bp = nextAfterDefiniteConstructedStart;
+        nextAfterDefiniteConstructedStart = null;
+        bp.apply(recurse).mutate(this);
+    }
+
+    private void simpleSdvance() {
+        Mutator m = next;
+        next = null;
+        m.mutate(this);
     }
 
     public int getPosition() {
         return position;
+    }
+
+    public boolean hasLimit() {
+        return limit != -1;
     }
 
     public boolean isEOF() {
@@ -64,87 +118,82 @@ public final class BERDecoder {
         return "{state=" + state + ", position=" + position + " limit=" + limit + "}";
     }
 
-    BERDecoder(Mutator mutator) {
-        this(mutator, 0, -1);
+    private void requireState(State requiredState) {
+        if (state != requiredState) {
+            throw new IllegalStateException("current state is " + state + ", required state is " + requiredState);
+        }
     }
 
-    BERDecoder(Mutator mutator, int position, int limit) {
+    private BERDecoder(Mutator mutator, int position, int limit) {
         this.position = position;
         this.limit = limit;
         mutator.mutate(this);
     }
 
-    static Mutator decodeOne(Function<BERValue, Mutator> next) {
+    private static Mutator decodeOne(Mutator next) {
         return getPosition(elementStart -> read(firstTagByte -> {
             if (firstTagByte == 0) {
-                return read(zeroLength -> {
-                    if (zeroLength != 0) {
-                        return error(Error.BAD_EOC);
-                    }
-                    return next.apply(null);
-                });
+                return error(Error.BAD_TAG);
+            }
+            return decodeOne0(elementStart, firstTagByte, next);
+        }));
+    }
+
+    private static Mutator decodeOne0(int elementStart, byte firstTagByte, Mutator next) {
+        BERTagClass tagClass = BERTagClass.values()[(firstTagByte >> 6) & 0x03];
+        boolean constructed = (firstTagByte & 0x20) != 0;
+        return decodeTag(firstTagByte & 0x1f, tag -> read(firstLengthByte -> {
+            if (firstLengthByte == (byte) 0x80) {
+                if (!constructed) {
+                    return error(Error.PRIMITIVE_INDEFINITE);
+                }
+                return getPosition(contentStart ->
+                        emit(new IndefiniteConstructedStart(elementStart, tagClass, tag, contentStart),
+                                decodeIndefiniteLengthContent(next)));
             } else {
-                BERTagClass tagClass = BERTagClass.values()[(firstTagByte >> 6) & 0x03];
-                boolean constructed = (firstTagByte & 0x20) != 0;
-                return decodeTag(firstTagByte & 0x1f, tag -> read(firstLengthByte -> {
-                    if (firstLengthByte == (byte) 0x80) {
-                        if (!constructed) {
-                            return error(Error.PRIMITIVE_INDEFINITE);
-                        }
-                        return getPosition(contentStart ->
-                                decodeIndefiniteLengthContent(new ArrayList<>(), nested -> getPosition(elementEnd -> {
-                                    int contentEnd = elementEnd - 2;
-                                    BERValue structure = new BERValue(tagClass, tag,
-                                            true, nested, contentStart, contentEnd,
-                                            elementStart, elementEnd);
-                                    return next.apply(structure);
-                                })));
+                return decodeLength(firstLengthByte, valueLength -> getPosition(contentStart -> {
+                    int contentEnd = contentStart + valueLength;
+                    if (constructed) {
+                        var event = new DefiniteConstructedStart(elementStart, tagClass, tag, contentStart, valueLength);
+                        return emitDCS(event,
+                                recurse -> {
+                                    if (recurse) {
+                                        return getLimit(outerLimit ->
+                                                setLimit(contentEnd,
+                                                        decodeAll(emit(definiteConstructedEnd,
+                                                                setLimit(outerLimit, next)))));
+                                    } else {
+                                        return skip(valueLength, next);
+                                    }
+                                });
                     } else {
-                        return decodeLength(firstLengthByte, valueLength -> getPosition(contentStart -> {
-                            int contentEnd = contentStart + valueLength;
-                            if (constructed) {
-                                return getLimit(outerLimit ->
-                                        setLimit(contentEnd, decodeAll(nested -> {
-                                            BERValue structure =
-                                                    new BERValue(tagClass, tag,
-                                                            false, nested,
-                                                            contentStart, contentEnd,
-                                                            elementStart, contentEnd);
-                                            return setLimit(outerLimit, next.apply(structure));
-                                        })));
-                            } else {
-                                BERValue structure = new BERValue(tagClass, tag,
-                                        false, null,
-                                        contentStart, contentEnd,
-                                        elementStart, contentEnd);
-                                return skip(valueLength, next.apply(structure));
-                            }
-                        }));
+                        return emit(new Primitive(elementStart, tagClass, tag, contentStart, valueLength),
+                                skip(valueLength, next));
                     }
                 }));
             }
         }));
     }
 
-    static Mutator decodeAll(Function<Collection<BERValue>, Mutator> next) {
-        return decodeAll0(new ArrayList<>(), next);
+    private static Mutator decodeAll(Mutator next) {
+        return isEOF(eof -> eof ? next : decodeOne(decodeAll(next)));
     }
 
     @FunctionalInterface
-    interface Mutator {
+    private interface Mutator {
         void mutate(BERDecoder decoder);
     }
 
-    static final Mutator done = decoder -> decoder.state = State.DONE;
+    private static final Mutator decodeOne = BERDecoder.decodeOne(BERDecoder::setDone);
 
-    private static Mutator decodeTag(int firstTagBits, IntFunction<Mutator> next) {
+    private static Mutator decodeTag(int firstTagBits, IntProcessor next) {
         if (firstTagBits != 0x1f) {
             return next.apply(firstTagBits);
         }
         return decodeLongTag(0, next);
     }
 
-    private static Mutator decodeLongTag(int tag, IntFunction<Mutator> next) {
+    private static Mutator decodeLongTag(int tag, IntProcessor next) {
         if (tag > Integer.MAX_VALUE >> 7) {
             return error(Error.LARGE_TAG_VALUE);
         }
@@ -157,14 +206,14 @@ public final class BERDecoder {
         });
     }
 
-    private static Mutator decodeLength(byte firstLengthByte, IntFunction<Mutator> next) {
+    private static Mutator decodeLength(byte firstLengthByte, IntProcessor next) {
         if ((firstLengthByte & 0x80) == 0) {
             return next.apply(firstLengthByte);
         }
         return decodeLongLength(firstLengthByte & 0x7f, 0, next);
     }
 
-    private static Mutator decodeLongLength(int lengthSize, int valueLength, IntFunction<Mutator> next) {
+    private static Mutator decodeLongLength(int lengthSize, int valueLength, IntProcessor next) {
         if (lengthSize == 0) {
             return next.apply(valueLength);
         }
@@ -174,30 +223,19 @@ public final class BERDecoder {
         return read(b -> decodeLongLength(lengthSize - 1, (valueLength << 8) | (b & 0xff), next));
     }
 
-    private static Mutator decodeIndefiniteLengthContent(
-            Collection<BERValue> nested,
-            Function<Collection<BERValue>, Mutator> next) {
-        return decodeOne(berValue -> {
-            if (berValue == null) {
-                return next.apply(nested);
+    private static Mutator decodeIndefiniteLengthContent(Mutator next) {
+        return getPosition(elementStart -> read(firstTagByte -> {
+            if (firstTagByte == 0) {
+                return read(zeroLength -> {
+                    if (zeroLength != 0) {
+                        return error(Error.BAD_EOC);
+                    }
+                    var event = new IndefiniteConstructedEnd(elementStart, elementStart + 2);
+                    return emit(event, next);
+                });
             }
-            nested.add(berValue);
-            return decodeIndefiniteLengthContent(nested, next);
-        });
-    }
-
-    private static Mutator decodeAll0(
-            Collection<BERValue> nested,
-            Function<Collection<BERValue>, Mutator> next) {
-        return isEOF(eof -> {
-            if (eof) {
-                return next.apply(nested);
-            }
-            return decodeOne(berValue -> {
-                nested.add(berValue);
-                return decodeAll0(nested, next);
-            });
-        });
+            return decodeOne0(elementStart, firstTagByte, decodeIndefiniteLengthContent(next));
+        }));
     }
 
     private static Mutator error(Error error) {
@@ -212,6 +250,15 @@ public final class BERDecoder {
         return decoder -> decoder.setSkip(length, next);
     }
 
+    private static Mutator emit(DecoderEvent event, Mutator next) {
+        assert !(event instanceof DefiniteConstructedStart);
+        return decoder -> decoder.setEvent(event, next);
+    }
+
+    private static Mutator emitDCS(DefiniteConstructedStart event, BooleanProcessor next) {
+        return decoder -> decoder.setDCS(event, next);
+    }
+
     private static Mutator setLimit(int limit, Mutator next) {
         return decoder -> {
             decoder.limit = limit;
@@ -219,11 +266,11 @@ public final class BERDecoder {
         };
     }
 
-    private static Mutator getLimit(IntFunction<Mutator> next) {
+    private static Mutator getLimit(IntProcessor next) {
         return decoder -> next.apply(decoder.limit).mutate(decoder);
     }
 
-    private static Mutator getPosition(IntFunction<Mutator> next) {
+    private static Mutator getPosition(IntProcessor next) {
         return decoder -> next.apply(decoder.getPosition()).mutate(decoder);
     }
 
@@ -233,11 +280,17 @@ public final class BERDecoder {
 
     private State state;
     private Error error;
+    private DecoderEvent event;
     private ByteProcessor byteProcessor;
+    private BooleanProcessor nextAfterDefiniteConstructedStart;
     private int skipLength;
-    private Mutator skipContinuation;
+    private Mutator next;
     private int position;
     private int limit;
+
+    private void setDone() {
+        state = State.DONE;
+    }
 
     private void setError(Error error) {
         state = State.FAILED;
@@ -253,14 +306,26 @@ public final class BERDecoder {
         }
     }
 
-    private void setSkip(int skipLength, Mutator skipContinuation) {
+    private void setSkip(int skipLength, Mutator next) {
         if (limit != -1 && position > limit - skipLength) {
             setError(Error.OUT_OF_BOUNDS);
         } else {
             state = State.SKIP;
             this.skipLength = skipLength;
-            this.skipContinuation = skipContinuation;
+            this.next = next;
         }
+    }
+
+    private void setEvent(DecoderEvent event, Mutator next) {
+        state = State.EVENT;
+        this.event = event;
+        this.next = next;
+    }
+
+    private void setDCS(DefiniteConstructedStart event, BooleanProcessor next) {
+        state = State.EVENT;
+        this.event = event;
+        nextAfterDefiniteConstructedStart = next;
     }
 
     @FunctionalInterface
@@ -271,5 +336,10 @@ public final class BERDecoder {
     @FunctionalInterface
     private interface ByteProcessor {
         Mutator apply(byte value);
+    }
+
+    @FunctionalInterface
+    private interface IntProcessor {
+        Mutator apply(int value);
     }
 }

@@ -1,5 +1,6 @@
 package name.funny.ber;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -32,113 +33,76 @@ public class BERDecoders {
     }
 
     public static StructureAndContent fromInputStream(InputStream in, byte[] bytes) throws BERDecodingException {
-        var ref = new Object() {
-            BERValue result;
-        };
-        BERDecoder decoder = new BERDecoder(BERDecoder.decodeOne(berValue -> {
-            ref.result = berValue;
-            return BERDecoder.done;
-        }));
-        bytes = fromInputStream0(decoder, bytes, in);
-        return new StructureAndContent(ref.result, bytes);
-    }
-
-    private static byte[] fromInputStream0(BERDecoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
-        for (; ; ) {
-            switch (decoder.getState()) {
-            case FAILED:
-                throw new BERDecodingException(decoder.getError() + " " + decoder);
-            case DONE:
-                return bytes;
-            case NEED_BYTE:
-                bytes = readByte(decoder, bytes, in);
-                break;
-            case SKIP:
-                bytes = readBytes(decoder, bytes, in);
-                break;
-            }
-        }
-    }
-
-    private static byte[] readByte(BERDecoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
-        int b;
-        try {
-            b = in.read();
-        } catch (IOException e) {
-            throw new BERDecodingException(decoder.toString(), e);
-        }
-        if (b == -1) {
-            throw new BERDecodingException("EOF " + decoder);
-        }
-        if (bytes != null) {
-            if (decoder.getPosition() >= bytes.length) {
-                bytes = Arrays.copyOf(bytes, bytes.length * 2);
-            }
-            bytes[decoder.getPosition()] = (byte) b;
-        }
-        decoder.processByte((byte) b);
-        return bytes;
-    }
-
-    private static byte[] readBytes(BERDecoder decoder, byte[] bytes, InputStream in) throws BERDecodingException {
-        int skipLength = decoder.getSkipLength();
-        if (skipLength != 0) {
-            if (bytes != null) {
-                int newPosition = decoder.getPosition() + skipLength;
-                if (newPosition > bytes.length) {
-                    bytes = Arrays.copyOf(bytes, Math.max(bytes.length * 2, newPosition));
-                }
-                int read;
-                try {
-                    read = in.readNBytes(bytes, decoder.getPosition(), skipLength);
-                } catch (IOException e) {
-                    throw new BERDecodingException(decoder.toString(), e);
-                }
-                if (read != skipLength) {
-                    throw new BERDecodingException("skip=" + skipLength + " read=" + read + " " + decoder);
-                }
-            } else {
-                long skipped;
-                try {
-                    skipped = in.skip(skipLength);
-                } catch (IOException e) {
-                    throw new BERDecodingException(decoder.toString(), e);
-                }
-                if (skipped != skipLength) {
-                    throw new BERDecodingException("skip=" + skipLength + " skipped=" + skipped + " " + decoder);
-                }
-            }
-        }
-        decoder.skip();
-        return bytes;
+        InputStreamParser parser = new InputStreamParser(in, bytes);
+        BERValue result = parser.decodeOne();
+        return new StructureAndContent(result, parser.bytes);
     }
 
     public static BERValue fromByteArray(byte[] bytes, int offset, int length) throws BERDecodingException {
-        var ref = new Object() {
-            BERValue result;
-        };
-        BERDecoder decoder = new BERDecoder(
-                BERDecoder.decodeOne(berValue -> {
-                    ref.result = berValue;
-                    return BERDecoder.done;
-                }),
-                offset, offset + length);
-        for (; ; ) {
-            switch (decoder.getState()) {
-            case FAILED:
-                throw new BERDecodingException(decoder.getError() + " " + decoder);
-            case DONE:
-                if (!decoder.isEOF()) {
-                    throw new BERDecodingException("trailing data " + decoder);
+        return new ByteArrayParser(bytes, offset, offset + length).decodeOne();
+    }
+
+    private static class InputStreamParser extends AbstractSynchronousParser {
+        private final InputStream in;
+        private byte[] bytes;
+
+        public InputStreamParser(InputStream in, byte[] bytes) {
+            this.in = in;
+            this.bytes = bytes;
+        }
+
+        @Override
+        protected void doSkip(int position, int skipLength) throws IOException {
+            if (skipLength != 0) {
+                long skipped;
+                if (bytes != null) {
+                    int newPosition = position + skipLength;
+                    if (newPosition > bytes.length) {
+                        bytes = Arrays.copyOf(bytes, Math.max(bytes.length * 2, newPosition));
+                    }
+                    skipped = in.readNBytes(bytes, position, skipLength);
+                } else {
+                    skipped = in.skip(skipLength);
                 }
-                return ref.result;
-            case NEED_BYTE:
-                decoder.processByte(bytes[decoder.getPosition()]);
-                break;
-            case SKIP:
-                decoder.skip();
-                break;
+                if (skipped != skipLength) {
+                    throw new IOException("skip=" + skipLength + " skipped=" + skipped);
+                }
             }
+        }
+
+        @Override
+        protected byte doReadByte(int position) throws IOException {
+            int n = in.read();
+            if (n == -1) {
+                throw new EOFException();
+            }
+            byte b = (byte) n;
+            if (bytes != null) {
+                if (position >= bytes.length) {
+                    bytes = Arrays.copyOf(bytes, bytes.length * 2);
+                }
+                bytes[position] = b;
+            }
+            return b;
+        }
+    }
+
+    private static class ByteArrayParser extends AbstractSynchronousParser {
+        private final byte[] bytes;
+
+        public ByteArrayParser(byte[] bytes, int offset, int limit) {
+            super(offset, limit);
+            this.bytes = bytes;
+        }
+
+        @Override
+        protected void doSkip(int position, int skipLength) {
+            // no need to do anything, bytes to be skipped are already known
+        }
+
+        @Override
+        protected byte doReadByte(int position) {
+            return bytes[position];
         }
     }
 }

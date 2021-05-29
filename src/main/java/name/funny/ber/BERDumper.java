@@ -1,5 +1,6 @@
 package name.funny.ber;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -327,7 +328,8 @@ public class BERDumper {
     @SuppressWarnings("java:S106")
     public static void main(String[] args) throws IOException, BERDecodingException {
         InputStream in = args.length == 0 || "-".equals(args[0]) ? System.in : Files.newInputStream(Paths.get(args[0]));
-        BERDecoders.StructureAndContent structureAndContent = BERDecoders.fromInputStream(in, new byte[4096]);
+        BERDecoders.StructureAndContent structureAndContent =
+                BERDecoders.fromInputStream(new BufferedInputStream(in), new byte[4096]);
         new BERDumper(System.out, args.length > 1)
                 .dump(structureAndContent);
         System.out.println();
