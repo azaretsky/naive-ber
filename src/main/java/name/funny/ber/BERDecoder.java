@@ -55,9 +55,9 @@ public final class BERDecoder {
     public void processByte(byte b) {
         requireState(State.NEED_BYTE);
         ++position;
-        ByteProcessor bp = byteProcessor;
+        ByteProcessor processor = byteProcessor;
         byteProcessor = null;
-        bp.apply(b).mutate(this);
+        processor.apply(b).advance(this);
     }
 
     public void recurse() {
@@ -90,15 +90,15 @@ public final class BERDecoder {
     }
 
     private void dcsAdvance(boolean recurse) {
-        BooleanProcessor bp = nextAfterDefiniteConstructedStart;
-        nextAfterDefiniteConstructedStart = null;
-        bp.apply(recurse).mutate(this);
+        BooleanProcessor processor = nextAfterDCS;
+        nextAfterDCS = null;
+        processor.apply(recurse).advance(this);
     }
 
     private void simpleSdvance() {
-        Mutator m = next;
+        Executor executor = next;
         next = null;
-        m.mutate(this);
+        executor.advance(this);
     }
 
     public int getPosition() {
@@ -124,13 +124,12 @@ public final class BERDecoder {
         }
     }
 
-    private BERDecoder(Mutator mutator, int position, int limit) {
+    private BERDecoder(Executor executor, int position, int limit) {
         this.position = position;
-        this.limit = limit;
-        mutator.mutate(this);
+        this.executeSetLimit(limit, executor);
     }
 
-    private static Mutator decodeOne(Mutator next) {
+    private static Executor decodeOne(Executor next) {
         return getPosition(elementStart -> read(firstTagByte -> {
             if (firstTagByte == 0) {
                 return error(Error.BAD_TAG);
@@ -139,7 +138,7 @@ public final class BERDecoder {
         }));
     }
 
-    private static Mutator decodeOne0(int elementStart, byte firstTagByte, Mutator next) {
+    private static Executor decodeOne0(int elementStart, byte firstTagByte, Executor next) {
         BERTagClass tagClass = BERTagClass.values()[(firstTagByte >> 6) & 0x03];
         boolean constructed = (firstTagByte & 0x20) != 0;
         return decodeTag(firstTagByte & 0x1f, tag -> read(firstLengthByte -> {
@@ -175,25 +174,25 @@ public final class BERDecoder {
         }));
     }
 
-    private static Mutator decodeAll(Mutator next) {
+    private static Executor decodeAll(Executor next) {
         return isEOF(eof -> eof ? next : decodeOne(decodeAll(next)));
     }
 
     @FunctionalInterface
-    private interface Mutator {
-        void mutate(BERDecoder decoder);
+    private interface Executor {
+        void advance(BERDecoder decoder);
     }
 
-    private static final Mutator decodeOne = BERDecoder.decodeOne(BERDecoder::setDone);
+    private static final Executor decodeOne = BERDecoder.decodeOne(BERDecoder::setDone);
 
-    private static Mutator decodeTag(int firstTagBits, IntProcessor next) {
+    private static Executor decodeTag(int firstTagBits, IntProcessor next) {
         if (firstTagBits != 0x1f) {
             return next.apply(firstTagBits);
         }
         return decodeLongTag(0, next);
     }
 
-    private static Mutator decodeLongTag(int tag, IntProcessor next) {
+    private static Executor decodeLongTag(int tag, IntProcessor next) {
         if (tag > Integer.MAX_VALUE >> 7) {
             return error(Error.LARGE_TAG_VALUE);
         }
@@ -206,14 +205,14 @@ public final class BERDecoder {
         });
     }
 
-    private static Mutator decodeLength(byte firstLengthByte, IntProcessor next) {
+    private static Executor decodeLength(byte firstLengthByte, IntProcessor next) {
         if ((firstLengthByte & 0x80) == 0) {
             return next.apply(firstLengthByte);
         }
         return decodeLongLength(firstLengthByte & 0x7f, 0, next);
     }
 
-    private static Mutator decodeLongLength(int lengthSize, int valueLength, IntProcessor next) {
+    private static Executor decodeLongLength(int lengthSize, int valueLength, IntProcessor next) {
         if (lengthSize == 0) {
             return next.apply(valueLength);
         }
@@ -223,7 +222,7 @@ public final class BERDecoder {
         return read(b -> decodeLongLength(lengthSize - 1, (valueLength << 8) | (b & 0xff), next));
     }
 
-    private static Mutator decodeIndefiniteLengthContent(Mutator next) {
+    private static Executor decodeIndefiniteLengthContent(Executor next) {
         return getPosition(elementStart -> read(firstTagByte -> {
             if (firstTagByte == 0) {
                 return read(zeroLength -> {
@@ -238,53 +237,50 @@ public final class BERDecoder {
         }));
     }
 
-    private static Mutator error(Error error) {
+    private static Executor error(Error error) {
         return decoder -> decoder.setError(error);
     }
 
-    private static Mutator read(ByteProcessor next) {
+    private static Executor read(ByteProcessor next) {
         return decoder -> decoder.setNeedByte(next);
     }
 
-    private static Mutator skip(int length, Mutator next) {
+    private static Executor skip(int length, Executor next) {
         return decoder -> decoder.setSkip(length, next);
     }
 
-    private static Mutator emit(DecoderEvent event, Mutator next) {
+    private static Executor emit(DecoderEvent event, Executor next) {
         assert !(event instanceof DefiniteConstructedStart);
         return decoder -> decoder.setEvent(event, next);
     }
 
-    private static Mutator emitDCS(DefiniteConstructedStart event, BooleanProcessor next) {
+    private static Executor emitDCS(DefiniteConstructedStart event, BooleanProcessor next) {
         return decoder -> decoder.setDCS(event, next);
     }
 
-    private static Mutator setLimit(int limit, Mutator next) {
-        return decoder -> {
-            decoder.limit = limit;
-            next.mutate(decoder);
-        };
+    private static Executor setLimit(int limit, Executor next) {
+        return decoder -> decoder.executeSetLimit(limit, next);
     }
 
-    private static Mutator getLimit(IntProcessor next) {
-        return decoder -> next.apply(decoder.limit).mutate(decoder);
+    private static Executor getLimit(IntProcessor next) {
+        return decoder -> decoder.executeGetLimit(next);
     }
 
-    private static Mutator getPosition(IntProcessor next) {
-        return decoder -> next.apply(decoder.getPosition()).mutate(decoder);
+    private static Executor getPosition(IntProcessor next) {
+        return decoder -> decoder.executeGetPosition(next);
     }
 
-    private static Mutator isEOF(BooleanProcessor next) {
-        return decoder -> next.apply(decoder.isEOF()).mutate(decoder);
+    private static Executor isEOF(BooleanProcessor next) {
+        return decoder -> decoder.executeIsEOF(next);
     }
 
     private State state;
     private Error error;
     private DecoderEvent event;
     private ByteProcessor byteProcessor;
-    private BooleanProcessor nextAfterDefiniteConstructedStart;
+    private BooleanProcessor nextAfterDCS;
     private int skipLength;
-    private Mutator next;
+    private Executor next;
     private int position;
     private int limit;
 
@@ -306,7 +302,7 @@ public final class BERDecoder {
         }
     }
 
-    private void setSkip(int skipLength, Mutator next) {
+    private void setSkip(int skipLength, Executor next) {
         if (limit != -1 && position > limit - skipLength) {
             setError(Error.OUT_OF_BOUNDS);
         } else {
@@ -316,7 +312,7 @@ public final class BERDecoder {
         }
     }
 
-    private void setEvent(DecoderEvent event, Mutator next) {
+    private void setEvent(DecoderEvent event, Executor next) {
         state = State.EVENT;
         this.event = event;
         this.next = next;
@@ -325,21 +321,38 @@ public final class BERDecoder {
     private void setDCS(DefiniteConstructedStart event, BooleanProcessor next) {
         state = State.EVENT;
         this.event = event;
-        nextAfterDefiniteConstructedStart = next;
+        nextAfterDCS = next;
+    }
+
+    private void executeSetLimit(int limit, Executor next) {
+        this.limit = limit;
+        next.advance(this);
+    }
+
+    private void executeGetLimit(IntProcessor next) {
+        next.apply(limit).advance(this);
+    }
+
+    private void executeGetPosition(IntProcessor next) {
+        next.apply(position).advance(this);
+    }
+
+    private void executeIsEOF(BooleanProcessor next) {
+        next.apply(position == limit).advance(this);
     }
 
     @FunctionalInterface
     private interface BooleanProcessor {
-        Mutator apply(boolean value);
+        Executor apply(boolean value);
     }
 
     @FunctionalInterface
     private interface ByteProcessor {
-        Mutator apply(byte value);
+        Executor apply(byte value);
     }
 
     @FunctionalInterface
     private interface IntProcessor {
-        Mutator apply(int value);
+        Executor apply(int value);
     }
 }
