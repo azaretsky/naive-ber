@@ -22,6 +22,16 @@ public interface DecoderEvent {
         IndefiniteConstructedStart(int elementStart, BERTagClass tagClass, int tag, int contentStart) {
             super(elementStart, tagClass, tag, contentStart);
         }
+
+        @Override
+        public String toString() {
+            return "IndefiniteConstructedStart{" +
+                    "elementStart=" + elementStart +
+                    ", tagClass=" + tagClass +
+                    ", tag=" + tag +
+                    ", contentStart=" + contentStart +
+                    '}';
+        }
     }
 
     final class DefiniteConstructedStart extends ConstructedStart {
@@ -39,6 +49,17 @@ public interface DecoderEvent {
             super(elementStart, tagClass, tag, contentStart);
             this.valueLength = valueLength;
         }
+
+        @Override
+        public String toString() {
+            return "DefiniteConstructedStart{" +
+                    "elementStart=" + elementStart +
+                    ", tagClass=" + tagClass +
+                    ", tag=" + tag +
+                    ", contentStart=" + contentStart +
+                    ", valueLength=" + valueLength +
+                    '}';
+        }
     }
 
     interface ConstructedEnd extends Constructed {
@@ -52,12 +73,25 @@ public interface DecoderEvent {
             this.contentEnd = contentEnd;
             this.elementEnd = elementEnd;
         }
+
+        @Override
+        public String toString() {
+            return "IndefiniteConstructedEnd{" +
+                    "contentEnd=" + contentEnd +
+                    ", elementEnd=" + elementEnd +
+                    '}';
+        }
     }
 
     DefiniteConstructedEnd definiteConstructedEnd = new DefiniteConstructedEnd();
 
     final class DefiniteConstructedEnd implements ConstructedEnd {
         private DefiniteConstructedEnd() {
+        }
+
+        @Override
+        public String toString() {
+            return "DefiniteConstructedEnd";
         }
     }
 
@@ -82,6 +116,17 @@ public interface DecoderEvent {
             this.tag = tag;
             this.contentStart = contentStart;
             this.valueLength = valueLength;
+        }
+
+        @Override
+        public String toString() {
+            return "Primitive{" +
+                    "elementStart=" + elementStart +
+                    ", tagClass=" + tagClass +
+                    ", tag=" + tag +
+                    ", contentStart=" + contentStart +
+                    ", valueLength=" + valueLength +
+                    '}';
         }
     }
 }

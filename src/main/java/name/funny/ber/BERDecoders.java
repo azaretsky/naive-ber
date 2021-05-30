@@ -42,7 +42,7 @@ public class BERDecoders {
         return new ByteArrayParser(bytes, offset, offset + length).decodeOne();
     }
 
-    private static class InputStreamParser extends AbstractSynchronousParser {
+    private static class InputStreamParser extends AbstractTreeBuilder {
         private final InputStream in;
         private byte[] bytes;
 
@@ -52,15 +52,15 @@ public class BERDecoders {
         }
 
         @Override
-        protected void doSkip(int position, int skipLength) throws IOException {
+        protected void skip(int currentPosition, int skipLength) throws IOException {
             if (skipLength != 0) {
                 long skipped;
                 if (bytes != null) {
-                    int newPosition = position + skipLength;
+                    int newPosition = currentPosition + skipLength;
                     if (newPosition > bytes.length) {
                         bytes = Arrays.copyOf(bytes, Math.max(bytes.length * 2, newPosition));
                     }
-                    skipped = in.readNBytes(bytes, position, skipLength);
+                    skipped = in.readNBytes(bytes, currentPosition, skipLength);
                 } else {
                     skipped = in.skip(skipLength);
                 }
@@ -71,23 +71,23 @@ public class BERDecoders {
         }
 
         @Override
-        protected byte doReadByte(int position) throws IOException {
+        protected byte nextByte(int currentPosition) throws IOException {
             int n = in.read();
             if (n == -1) {
                 throw new EOFException();
             }
             byte b = (byte) n;
             if (bytes != null) {
-                if (position >= bytes.length) {
+                if (currentPosition >= bytes.length) {
                     bytes = Arrays.copyOf(bytes, bytes.length * 2);
                 }
-                bytes[position] = b;
+                bytes[currentPosition] = b;
             }
             return b;
         }
     }
 
-    private static class ByteArrayParser extends AbstractSynchronousParser {
+    private static class ByteArrayParser extends AbstractTreeBuilder {
         private final byte[] bytes;
 
         public ByteArrayParser(byte[] bytes, int offset, int limit) {
@@ -96,13 +96,13 @@ public class BERDecoders {
         }
 
         @Override
-        protected void doSkip(int position, int skipLength) {
+        protected void skip(int currentPosition, int skipLength) {
             // no need to do anything, bytes to be skipped are already known
         }
 
         @Override
-        protected byte doReadByte(int position) {
-            return bytes[position];
+        protected byte nextByte(int currentPosition) {
+            return bytes[currentPosition];
         }
     }
 }

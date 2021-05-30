@@ -115,7 +115,24 @@ public final class BERDecoder {
 
     @Override
     public String toString() {
-        return "{state=" + state + ", position=" + position + " limit=" + limit + "}";
+        StringBuilder builder = new StringBuilder()
+                .append("{state=").append(state)
+                .append(", position=").append(position)
+                .append(", limit=").append(limit);
+        switch (state) {
+        case FAILED:
+            builder.append(", error=").append(error);
+            break;
+        case SKIP:
+            builder.append(", skip-length=").append(skipLength);
+            break;
+        case EVENT:
+            builder.append(", event=").append(event);
+            break;
+        default:
+            // no additional information for DONE and NEED_BYTE
+        }
+        return builder.append('}').toString();
     }
 
     private void requireState(State requiredState) {

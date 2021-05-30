@@ -4,15 +4,12 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 
-abstract class AbstractSynchronousParser {
-    private final BERDecoder decoder;
-
-    protected AbstractSynchronousParser() {
-        decoder = BERDecoder.singleElementDecoder();
+abstract class AbstractTreeBuilder extends AbstractPullParser {
+    protected AbstractTreeBuilder() {
     }
 
-    protected AbstractSynchronousParser(int position, int limit) {
-        decoder = BERDecoder.singleElementDecoder(position, limit);
+    protected AbstractTreeBuilder(int position, int limit) {
+        super(position, limit);
     }
 
     public BERValue decodeOne() throws BERDecodingException {
@@ -31,8 +28,7 @@ abstract class AbstractSynchronousParser {
         return berValue;
     }
 
-    protected abstract void doSkip(int position, int skipLength) throws IOException;
-    protected abstract byte doReadByte(int position) throws IOException;
+    protected abstract void skip(int currentPosition, int skipLength) throws IOException;
 
     private BERValue decodeOne0(DecoderEvent event) throws BERDecodingException, IOException {
         BERValue structure;
@@ -44,7 +40,7 @@ abstract class AbstractSynchronousParser {
                     false, null,
                     primitive.contentStart, primitive.contentEnd(),
                     primitive.elementStart, primitive.elementEnd());
-            doSkip(decoder.getPosition(), decoder.getSkipLength());
+            skip(decoder.getPosition(), decoder.getSkipLength());
         } else if (event instanceof DecoderEvent.DefiniteConstructedStart) {
             decoder.recurse();
             checkDecoderState();
@@ -72,12 +68,6 @@ abstract class AbstractSynchronousParser {
         return structure;
     }
 
-    private void checkDecoderState() throws BERDecodingException {
-        if (decoder.getState() == BERDecoder.State.FAILED) {
-            throw new BERDecodingException(decoder.getError() + " " + decoder);
-        }
-    }
-
     private DecoderEvent.ConstructedEnd decodeNested(Collection<BERValue> nested)
             throws BERDecodingException, IOException {
         for (; ; ) {
@@ -86,22 +76,6 @@ abstract class AbstractSynchronousParser {
                 return (DecoderEvent.ConstructedEnd) event;
             }
             nested.add(decodeOne0(event));
-        }
-    }
-
-    private DecoderEvent nextEvent() throws BERDecodingException, IOException {
-        for (; ; ) {
-            switch (decoder.getState()) {
-            case FAILED:
-                throw new BERDecodingException(decoder.getError() + " " + decoder);
-            case NEED_BYTE:
-                decoder.processByte(doReadByte(decoder.getPosition()));
-                break;
-            case EVENT:
-                return decoder.getEvent();
-            default:
-                throw new AssertionError("unexpected state " + decoder);
-            }
         }
     }
 }

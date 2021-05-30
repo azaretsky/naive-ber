@@ -44,16 +44,33 @@ public class BERDumper {
         this.showExtents = showExtents;
     }
 
-    private boolean dumpUniversallyTaggedElement(int tag, ByteBuffer contentBuffer) throws IOException {
+    public static void emitTagName(Appendable out, BERTagClass tagClass, int tag) throws IOException {
+        String knownName = knownTagName(tagClass, tag);
+        if (knownName != null) {
+            out.append(knownName);
+        } else {
+            out.append('[');
+            switch (tagClass) {
+            case Universal:
+            case Application:
+            case Private:
+                out.append(tagClass.toString().toLowerCase());
+                out.append(' ');
+                break;
+            case Context:
+                break;
+            }
+            out.append(String.valueOf(tag));
+            out.append(']');
+        }
+    }
+
+    public static boolean emitUniversalPrimitive(Appendable out, int tag, ByteBuffer contentBuffer) throws IOException {
         switch (tag) {
         case 1:
             if (contentBuffer.limit() == 1) {
-                int value = contentBuffer.get(0) & 0xff;
-                out.append(value == 0 ? " false" : " true");
-                if (value != 0xff) {
-                    out.append(" non-DER ");
-                    out.append(String.valueOf(value));
-                }
+                out.append(' ');
+                emitBoolean(out, contentBuffer);
                 break;
             } else {
                 return false;
@@ -64,16 +81,7 @@ public class BERDumper {
             break;
         case 6:
             out.append(' ');
-            String oid = decodeOid(contentBuffer);
-            String oidName = knownOids.getProperty(oid);
-            if (oidName != null) {
-                out.append(oidName);
-                out.append(" (");
-                out.append(oid);
-                out.append(')');
-            } else {
-                out.append(oid);
-            }
+            emitOid(out, contentBuffer);
             break;
         case 12:
         case 19:
@@ -81,27 +89,67 @@ public class BERDumper {
         case 23:
         case 24:
         case 30:
-            if (contentBuffer.limit() > 0) {
-                Charset charset;
-                switch (tag) {
-                case 12:
-                    charset = StandardCharsets.UTF_8;
-                    break;
-                case 30:
-                    charset = StandardCharsets.UTF_16BE;
-                    break;
-                default:
-                    charset = StandardCharsets.US_ASCII;
-                    break;
-                }
-                out.append(' ');
-                out.append(charset.decode(contentBuffer));
-            }
+            emitText(out, tag, contentBuffer);
             break;
         default:
             return false;
         }
         return true;
+    }
+
+    public static void emitBlob(Appendable out, ByteBuffer contentBuffer) throws IOException {
+        String stringValue;
+        if ((stringValue = tryDecodeASCII(contentBuffer)) != null) {
+            out.append(" ia5-string ");
+            out.append(stringValue);
+        } else if ((stringValue = tryDecodeUTF8(contentBuffer)) != null) {
+            out.append(" utf8-string ");
+            out.append(stringValue);
+        } else {
+            out.append(' ');
+            hexdump(out, contentBuffer);
+        }
+    }
+
+    private static void emitBoolean(Appendable out, ByteBuffer contentBuffer) throws IOException {
+        int value = contentBuffer.get(0) & 0xff;
+        out.append(value == 0 ? "false" : "true");
+        if (value != 0xff) {
+            out.append(" non-DER ");
+            out.append(String.valueOf(value));
+        }
+    }
+
+    private static void emitOid(Appendable out, ByteBuffer contentBuffer) throws IOException {
+        String oid = decodeOid(contentBuffer);
+        String oidName = knownOids.getProperty(oid);
+        if (oidName != null) {
+            out.append(oidName);
+            out.append(" (");
+            out.append(oid);
+            out.append(')');
+        } else {
+            out.append(oid);
+        }
+    }
+
+    private static void emitText(Appendable out, int tag, ByteBuffer contentBuffer) throws IOException {
+        if (contentBuffer.limit() > 0) {
+            Charset charset;
+            switch (tag) {
+            case 12:
+                charset = StandardCharsets.UTF_8;
+                break;
+            case 30:
+                charset = StandardCharsets.UTF_16BE;
+                break;
+            default:
+                charset = StandardCharsets.US_ASCII;
+                break;
+            }
+            out.append(' ');
+            out.append(charset.decode(contentBuffer));
+        }
     }
 
     private static boolean isAsciiControl(int c) {
@@ -145,24 +193,7 @@ public class BERDumper {
             out.append(String.valueOf(berValue.getElementLength()));
             out.append("> ");
         }
-        String knownName = knownTagName(berValue);
-        if (knownName != null) {
-            out.append(knownName);
-        } else {
-            out.append('[');
-            switch (berValue.getTagClass()) {
-            case Universal:
-            case Application:
-            case Private:
-                out.append(berValue.getTagClass().toString().toLowerCase());
-                out.append(' ');
-                break;
-            case Context:
-                break;
-            }
-            out.append(String.valueOf(berValue.getTag()));
-            out.append(']');
-        }
+        emitTagName(out, berValue.getTagClass(), berValue.getTag());
         if (berValue.isEmpty()) {
             return;
         }
@@ -185,7 +216,7 @@ public class BERDumper {
         }
         ByteBuffer contentBuffer = structureAndContent.byteBuffer();
         if (berValue.getTagClass() == BERTagClass.Universal &&
-                dumpUniversallyTaggedElement(berValue.getTag(), contentBuffer)) {
+                emitUniversalPrimitive(out, berValue.getTag(), contentBuffer)) {
             return;
         }
         BERValue innerBER = tryExtractBerValue(structureAndContent);
@@ -195,17 +226,7 @@ public class BERDumper {
             out.append(":\n");
             dump(new BERDecoders.StructureAndContent(innerBER, content), indent.extend(2));
         } else {
-            String stringValue;
-            if ((stringValue = tryDecodeASCII(contentBuffer)) != null) {
-                out.append(" ia5-string ");
-                out.append(stringValue);
-            } else if ((stringValue = tryDecodeUTF8(contentBuffer)) != null) {
-                out.append(" utf8-string ");
-                out.append(stringValue);
-            } else {
-                out.append(' ');
-                hexdump(out, contentBuffer);
-            }
+            emitBlob(out, contentBuffer);
         }
     }
 
@@ -273,9 +294,9 @@ public class BERDumper {
         return out.toString();
     }
 
-    private static String knownTagName(BERValue berValue) {
-        if (berValue.getTagClass() == BERTagClass.Universal) {
-            switch (berValue.getTag()) {
+    private static String knownTagName(BERTagClass tagClass, int tag) {
+        if (tagClass == BERTagClass.Universal) {
+            switch (tag) {
             case 1:
                 return "boolean";
             case 2:
