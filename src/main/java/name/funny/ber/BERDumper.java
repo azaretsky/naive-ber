@@ -231,7 +231,7 @@ public class BERDumper {
     }
 
     @SuppressWarnings("java:S2095")
-    private static void hexdump(Appendable out, ByteBuffer valueBuffer) {
+    public static void hexdump(Appendable out, ByteBuffer valueBuffer) {
         Formatter fmt = new Formatter(out);
         for (int i = 0; i < valueBuffer.limit(); i++) {
             fmt.format("%02x", valueBuffer.get(i));
