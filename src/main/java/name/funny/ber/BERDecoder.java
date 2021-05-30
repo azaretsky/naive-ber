@@ -5,6 +5,8 @@ import name.funny.ber.DecoderEvent.IndefiniteConstructedEnd;
 import name.funny.ber.DecoderEvent.IndefiniteConstructedStart;
 import name.funny.ber.DecoderEvent.Primitive;
 
+import java.nio.ByteBuffer;
+
 import static name.funny.ber.DecoderEvent.definiteConstructedEnd;
 
 public final class BERDecoder {
@@ -52,9 +54,15 @@ public final class BERDecoder {
         return event;
     }
 
+    public ByteBuffer getEventFraming() {
+        requireState(State.EVENT);
+        return ByteBuffer.wrap(framing, 0, framingPosition);
+    }
+
     public void processByte(byte b) {
         requireState(State.NEED_BYTE);
         ++position;
+        framing[framingPosition++] = b;
         ByteProcessor processor = byteProcessor;
         byteProcessor = null;
         processor.apply(b).advance(this);
@@ -90,12 +98,14 @@ public final class BERDecoder {
     }
 
     private void dcsAdvance(boolean recurse) {
+        framingPosition = 0;
         BooleanProcessor processor = nextAfterDCS;
         nextAfterDCS = null;
         processor.apply(recurse).advance(this);
     }
 
     private void simpleAdvance() {
+        framingPosition = 0;
         Executor executor = next;
         next = null;
         executor.advance(this);
@@ -300,6 +310,9 @@ public final class BERDecoder {
     private Executor next;
     private int position;
     private int limit;
+
+    private final byte[] framing = new byte[16];
+    private int framingPosition = 0;
 
     private void setDone() {
         state = State.DONE;
