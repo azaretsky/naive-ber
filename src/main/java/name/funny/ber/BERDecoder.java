@@ -72,7 +72,7 @@ public final class BERDecoder {
         switch (state) {
         case SKIP: {
             position += skipLength;
-            simpleSdvance();
+            simpleAdvance();
             break;
         }
         case EVENT:
@@ -81,7 +81,7 @@ public final class BERDecoder {
             if (isDCS) {
                 dcsAdvance(false);
             } else {
-                simpleSdvance();
+                simpleAdvance();
             }
             break;
         default:
@@ -95,7 +95,7 @@ public final class BERDecoder {
         processor.apply(recurse).advance(this);
     }
 
-    private void simpleSdvance() {
+    private void simpleAdvance() {
         Executor executor = next;
         next = null;
         executor.advance(this);
