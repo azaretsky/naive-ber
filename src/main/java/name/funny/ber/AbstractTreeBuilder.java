@@ -16,6 +16,7 @@ abstract class AbstractTreeBuilder extends AbstractPullParser {
         BERValue berValue;
         try {
             berValue = decodeOne0(nextEvent());
+            checkDecoderState();
         } catch (IOException e) {
             throw new BERDecodingException(decoder + " " + e.getMessage(), e);
         }
@@ -31,41 +32,35 @@ abstract class AbstractTreeBuilder extends AbstractPullParser {
     protected abstract void skip(int currentPosition, int skipLength) throws IOException;
 
     private BERValue decodeOne0(DecoderEvent event) throws BERDecodingException, IOException {
-        BERValue structure;
         if (event instanceof DecoderEvent.Primitive) {
-            decoder.next();
-            checkDecoderState();
             var primitive = (DecoderEvent.Primitive) event;
-            structure = new BERValue(primitive.tagClass, primitive.tag,
+            skip(decoder.getPosition(), primitive.valueLength);
+            decoder.next();
+            return new BERValue(primitive.tagClass, primitive.tag,
                     false, null,
                     primitive.contentStart, primitive.contentEnd(),
                     primitive.elementStart, primitive.elementEnd());
-            skip(decoder.getPosition(), decoder.getSkipLength());
         } else if (event instanceof DecoderEvent.DefiniteConstructedStart) {
-            decoder.recurse();
-            checkDecoderState();
             var start = (DecoderEvent.DefiniteConstructedStart) event;
+            decoder.recurse();
             Collection<BERValue> nested = new ArrayList<>();
             decodeNested(nested);
-            structure = new BERValue(start.tagClass, start.tag,
+            return new BERValue(start.tagClass, start.tag,
                     false, nested,
                     start.contentStart, start.contentEnd(),
                     start.elementStart, start.elementEnd());
         } else if (event instanceof DecoderEvent.IndefiniteConstructedStart) {
-            decoder.next();
-            checkDecoderState();
             var start = (DecoderEvent.IndefiniteConstructedStart) event;
+            decoder.next();
             Collection<BERValue> nested = new ArrayList<>();
             var end = (DecoderEvent.IndefiniteConstructedEnd) decodeNested(nested);
-            structure = new BERValue(start.tagClass, start.tag,
+            return new BERValue(start.tagClass, start.tag,
                     false, nested,
                     start.contentStart, end.contentEnd,
                     start.elementStart, end.elementEnd);
         } else {
             throw new AssertionError("unexpected event " + decoder);
         }
-        decoder.next();
-        return structure;
     }
 
     private DecoderEvent.ConstructedEnd decodeNested(Collection<BERValue> nested)
@@ -73,6 +68,7 @@ abstract class AbstractTreeBuilder extends AbstractPullParser {
         for (; ; ) {
             DecoderEvent event = nextEvent();
             if (event instanceof DecoderEvent.ConstructedEnd) {
+                decoder.next();
                 return (DecoderEvent.ConstructedEnd) event;
             }
             nested.add(decodeOne0(event));

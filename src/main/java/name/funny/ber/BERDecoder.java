@@ -14,7 +14,6 @@ public final class BERDecoder {
         DONE,
         FAILED,
         NEED_BYTE,
-        SKIP,
         EVENT
     }
 
@@ -42,11 +41,6 @@ public final class BERDecoder {
     public Error getError() {
         requireState(State.FAILED);
         return error;
-    }
-
-    public int getSkipLength() {
-        requireState(State.SKIP);
-        return skipLength;
     }
 
     public DecoderEvent getEvent() {
@@ -77,23 +71,13 @@ public final class BERDecoder {
     }
 
     public void next() {
-        switch (state) {
-        case SKIP: {
-            position += skipLength;
+        requireState(State.EVENT);
+        boolean isDCS = event instanceof DefiniteConstructedStart;
+        event = null;
+        if (isDCS) {
+            dcsAdvance(false);
+        } else {
             simpleAdvance();
-            break;
-        }
-        case EVENT:
-            boolean isDCS = event instanceof DefiniteConstructedStart;
-            event = null;
-            if (isDCS) {
-                dcsAdvance(false);
-            } else {
-                simpleAdvance();
-            }
-            break;
-        default:
-            throw new IllegalStateException("cannot continue in " + state + " state");
         }
     }
 
@@ -132,9 +116,6 @@ public final class BERDecoder {
         switch (state) {
         case FAILED:
             builder.append(", error=").append(error);
-            break;
-        case SKIP:
-            builder.append(", skip-length=").append(skipLength);
             break;
         case EVENT:
             builder.append(", event=").append(event);
@@ -273,7 +254,7 @@ public final class BERDecoder {
     }
 
     private static Executor skip(int length, Executor next) {
-        return decoder -> decoder.setSkip(length, next);
+        return decoder -> decoder.executeSkip(length, next);
     }
 
     private static Executor emit(DecoderEvent event, Executor next) {
@@ -306,7 +287,6 @@ public final class BERDecoder {
     private DecoderEvent event;
     private ByteProcessor byteProcessor;
     private BooleanProcessor nextAfterDCS;
-    private int skipLength;
     private Executor next;
     private int position;
     private int limit;
@@ -332,13 +312,12 @@ public final class BERDecoder {
         }
     }
 
-    private void setSkip(int skipLength, Executor next) {
-        if (limit != -1 && position > limit - skipLength) {
+    private void executeSkip(int length, Executor next) {
+        if (limit != -1 && position > limit - length) {
             setError(Error.OUT_OF_BOUNDS);
         } else {
-            state = State.SKIP;
-            this.skipLength = skipLength;
-            this.next = next;
+            position += length;
+            next.advance(this);
         }
     }
 

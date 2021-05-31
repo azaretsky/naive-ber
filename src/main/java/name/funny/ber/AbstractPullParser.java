@@ -30,8 +30,8 @@ public abstract class AbstractPullParser {
                 break;
             case EVENT:
                 return decoder.getEvent();
-            default:
-                throw new AssertionError("unexpected state " + decoder);
+            case DONE:
+                return null;
             }
         }
     }
